@@ -432,6 +432,24 @@ type ModelConfig struct {
 	CustomAPIURL string `json:"customApiUrl,omitempty"`
 }
 
+func isValidTradingSymbol(symbol string, allowUSDC bool) bool {
+	upper := strings.ToUpper(strings.TrimSpace(symbol))
+	if upper == "" {
+		return true
+	}
+	if strings.HasSuffix(upper, "USDT") {
+		return true
+	}
+	return allowUSDC && strings.HasSuffix(upper, "USDC")
+}
+
+func tradingSymbolValidationMessage(allowUSDC bool, symbol string) string {
+	if allowUSDC {
+		return fmt.Sprintf("Invalid symbol format: %s, must end with USDT or USDC", symbol)
+	}
+	return fmt.Sprintf("Invalid symbol format: %s, must end with USDT", symbol)
+}
+
 // SafeModelConfig Safe model configuration structure (does not contain sensitive information)
 type SafeModelConfig struct {
 	ID              string `json:"id"`
@@ -514,13 +532,26 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		return
 	}
 
+	allowUSDCSymbols := false
+	if req.ExchangeID != "" {
+		exchanges, err := s.store.Exchange().List(userID)
+		if err == nil {
+			for _, ex := range exchanges {
+				if ex.ID == req.ExchangeID && strings.EqualFold(ex.ExchangeType, "binance") {
+					allowUSDCSymbols = true
+					break
+				}
+			}
+		}
+	}
+
 	// Validate trading symbol format
 	if req.TradingSymbols != "" {
 		symbols := strings.Split(req.TradingSymbols, ",")
 		for _, symbol := range symbols {
 			symbol = strings.TrimSpace(symbol)
-			if symbol != "" && !strings.HasSuffix(strings.ToUpper(symbol), "USDT") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid symbol format: %s, must end with USDT", symbol)})
+			if !isValidTradingSymbol(symbol, allowUSDCSymbols) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": tradingSymbolValidationMessage(allowUSDCSymbols, symbol)})
 				return
 			}
 		}
@@ -780,6 +811,28 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	if existingTrader == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Trader does not exist"})
 		return
+	}
+
+	allowUSDCSymbols := false
+	exchanges, err := s.store.Exchange().List(userID)
+	if err == nil {
+		for _, ex := range exchanges {
+			if ex.ID == existingTrader.ExchangeID && strings.EqualFold(ex.ExchangeType, "binance") {
+				allowUSDCSymbols = true
+				break
+			}
+		}
+	}
+
+	if req.TradingSymbols != "" {
+		symbols := strings.Split(req.TradingSymbols, ",")
+		for _, symbol := range symbols {
+			symbol = strings.TrimSpace(symbol)
+			if !isValidTradingSymbol(symbol, allowUSDCSymbols) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": tradingSymbolValidationMessage(allowUSDCSymbols, symbol)})
+				return
+			}
+		}
 	}
 
 	// Set default values
