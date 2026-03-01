@@ -96,6 +96,9 @@ generate_env() {
     # Generate RSA private key (2048 bits)
     RSA_PRIVATE_KEY=$(openssl genrsa 2048 2>/dev/null | tr '\n' '\\' | sed 's/\\/\\n/g' | sed 's/\\n$//')
 
+    # Generate PostgreSQL password (24 bytes, alphanumeric safe)
+    DB_PASSWORD=$(openssl rand -base64 24 | tr -d '+/=' | head -c 32)
+
     # Create .env file
     cat > .env << EOF
 # NOFX Configuration (Auto-generated)
@@ -116,6 +119,15 @@ DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY}
 
 # RSA private key (for client-server encryption)
 RSA_PRIVATE_KEY=${RSA_PRIVATE_KEY}
+
+# Database configuration (PostgreSQL)
+DB_TYPE=postgres
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=nofx
+DB_PASSWORD=${DB_PASSWORD}
+DB_NAME=nofx
+DB_SSLMODE=disable
 EOF
 
     echo -e "${GREEN}✓ Encryption keys generated${NC}"

@@ -2,8 +2,31 @@
 # Production-ready stable version
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nofx-postgres
+    restart: unless-stopped
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${DB_USER:-nofx}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-nofx_secret}
+      - POSTGRES_DB=${DB_NAME:-nofx}
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - nofx-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-nofx} -d ${DB_NAME:-nofx}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   nofx:
-    image: ghcr.io/nofxaios/nofx/nofx-backend:stable
+    image: clearmann/nofx-backend:mdev
     container_name: nofx-trading
     restart: unless-stopped
     stop_grace_period: 30s
@@ -17,6 +40,9 @@ services:
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - AI_MAX_TOKENS=8000
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - nofx-network
     healthcheck:
@@ -27,7 +53,7 @@ services:
       start_period: 60s
 
   nofx-frontend:
-    image: ghcr.io/nofxaios/nofx/nofx-frontend:stable
+    image: clearmann/nofx-frontend:mdev
     container_name: nofx-frontend
     restart: unless-stopped
     ports:
@@ -46,3 +72,6 @@ services:
 networks:
   nofx-network:
     driver: bridge
+
+volumes:
+  postgres_data:
