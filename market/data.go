@@ -30,6 +30,16 @@ var (
 
 // Note: Kline data now uses free/open API (coinank_api.Kline) which doesn't require authentication
 
+// toUSDTSymbol converts a symbol's quote currency to USDT for K-line fetching.
+// e.g. ETHUSDC -> ETHUSDT. USDT/other symbols are returned unchanged.
+// Only trading operations should use the original USDC symbol.
+func toUSDTSymbol(symbol string) string {
+	if strings.HasSuffix(symbol, "USDC") {
+		return strings.TrimSuffix(symbol, "USDC") + "USDT"
+	}
+	return symbol
+}
+
 // getKlinesFromCoinAnk fetches kline data from CoinAnk API (replacement for WSMonitorCli)
 func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline, error) {
 	// Map interval string to coinank enum
@@ -177,6 +187,10 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 	// Normalize symbol
 	symbol = Normalize(symbol)
 
+	// For K-line fetching, always use USDT variant (CoinAnk/Hyperliquid data is primarily USDT-based)
+	// Trading operations will still use the original symbol (e.g., ETHUSDC)
+	klineSymbol := toUSDTSymbol(symbol)
+
 	// Check if this is an xyz dex asset (use Hyperliquid API)
 	isXyzAsset := IsXyzDexAsset(symbol)
 
@@ -186,32 +200,33 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 	// Get 3-minute K-line data (or 5-minute for xyz assets as 3m may not be available)
 	if useHyperliquidAPI {
 		// Use Hyperliquid API for xyz dex assets (use 5m since 3m may not be available)
-		klines3m, err = getKlinesFromHyperliquid(symbol, "5m", 100)
+		klines3m, err = getKlinesFromHyperliquid(klineSymbol, "5m", 100)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 5-minute K-line from Hyperliquid: %v", err)
 		}
 	} else {
 		// Use CoinAnk for regular crypto assets with exchange-specific data
-		klines3m, err = getKlinesFromCoinAnk(symbol, "3m", exchange, 100)
+		// Use klineSymbol (USDT variant) for fetching, as CoinAnk data is primarily USDT-based
+		klines3m, err = getKlinesFromCoinAnk(klineSymbol, "3m", exchange, 100)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 3-minute K-line from CoinAnk (%s): %v", exchange, err)
 		}
 	}
 
 	// Data staleness detection: Prevent DOGEUSDT-style price freeze issues
-	if isStaleData(klines3m, symbol) {
+	if isStaleData(klines3m, klineSymbol) {
 		logger.Infof("⚠️  WARNING: %s detected stale data (consecutive price freeze), skipping symbol", symbol)
 		return nil, fmt.Errorf("%s data is stale, possible cache failure", symbol)
 	}
 
 	// Get 4-hour K-line data
 	if useHyperliquidAPI {
-		klines4h, err = getKlinesFromHyperliquid(symbol, "4h", 100)
+		klines4h, err = getKlinesFromHyperliquid(klineSymbol, "4h", 100)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 4-hour K-line from Hyperliquid: %v", err)
 		}
 	} else {
-		klines4h, err = getKlinesFromCoinAnk(symbol, "4h", exchange, 100)
+		klines4h, err = getKlinesFromCoinAnk(klineSymbol, "4h", exchange, 100)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 4-hour K-line from CoinAnk (%s): %v", exchange, err)
 		}
@@ -287,6 +302,8 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 // count: number of K-lines for each timeframe
 func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	symbol = Normalize(symbol)
+	// For K-line fetching, always use USDT variant
+	klineSymbol := toUSDTSymbol(symbol)
 
 	if len(timeframes) == 0 {
 		return nil, fmt.Errorf("at least one timeframe is required")
@@ -323,16 +340,16 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 
 		if isXyzAsset {
 			// Use Hyperliquid API for xyz dex assets
-			klines, err = getKlinesFromHyperliquid(symbol, tf, 200)
+			klines, err = getKlinesFromHyperliquid(klineSymbol, tf, 200)
 			if err != nil {
-				logger.Infof("⚠️ Failed to get %s %s K-line from Hyperliquid: %v", symbol, tf, err)
+				logger.Infof("⚠️ Failed to get %s %s K-line from Hyperliquid: %v", klineSymbol, tf, err)
 				continue
 			}
 		} else {
 			// Use CoinAnk for regular crypto assets (default to Binance)
-			klines, err = getKlinesFromCoinAnk(symbol, tf, "binance", 200)
+			klines, err = getKlinesFromCoinAnk(klineSymbol, tf, "binance", 200)
 			if err != nil {
-				logger.Infof("⚠️ Failed to get %s %s K-line from CoinAnk: %v", symbol, tf, err)
+				logger.Infof("⚠️ Failed to get %s %s K-line from CoinAnk: %v", klineSymbol, tf, err)
 				continue
 			}
 		}
@@ -370,7 +387,7 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 	currentRSI7 := calculateRSI(primaryKlines, 7)
 
 	// Calculate price changes
-	priceChange1h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 60) // 1 hour
+	priceChange1h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 60)  // 1 hour
 	priceChange4h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 240) // 4 hours
 
 	// Get OI data
@@ -1114,6 +1131,10 @@ func Normalize(symbol string) string {
 
 	// For regular crypto assets
 	if strings.HasSuffix(symbol, "USDT") {
+		return symbol
+	}
+	// USDC pairs are valid trading pairs, keep as-is
+	if strings.HasSuffix(symbol, "USDC") {
 		return symbol
 	}
 	return symbol + "USDT"
