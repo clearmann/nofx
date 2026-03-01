@@ -108,25 +108,25 @@ type RecentOrder struct {
 
 // Context trading context (complete information passed to AI)
 type Context struct {
-	CurrentTime     string                             `json:"current_time"`
-	RuntimeMinutes  int                                `json:"runtime_minutes"`
-	CallCount       int                                `json:"call_count"`
-	Account         AccountInfo                        `json:"account"`
-	Positions       []PositionInfo                     `json:"positions"`
-	CandidateCoins  []CandidateCoin                    `json:"candidate_coins"`
-	PromptVariant   string                             `json:"prompt_variant,omitempty"`
-	TradingStats    *TradingStats                      `json:"trading_stats,omitempty"`
-	RecentOrders    []RecentOrder                      `json:"recent_orders,omitempty"`
-	MarketDataMap   map[string]*market.Data            `json:"-"`
-	MultiTFMarket   map[string]map[string]*market.Data `json:"-"`
-	OITopDataMap    map[string]*OITopData              `json:"-"`
-	QuantDataMap    map[string]*QuantData              `json:"-"`
-	OIRankingData      *nofxos.OIRankingData      `json:"-"` // Market-wide OI ranking data
-	NetFlowRankingData *nofxos.NetFlowRankingData `json:"-"` // Market-wide fund flow ranking data
-	PriceRankingData   *nofxos.PriceRankingData   `json:"-"` // Market-wide price gainers/losers
-	BTCETHLeverage     int                          `json:"-"`
-	AltcoinLeverage int                                `json:"-"`
-	Timeframes      []string                           `json:"-"`
+	CurrentTime        string                             `json:"current_time"`
+	RuntimeMinutes     int                                `json:"runtime_minutes"`
+	CallCount          int                                `json:"call_count"`
+	Account            AccountInfo                        `json:"account"`
+	Positions          []PositionInfo                     `json:"positions"`
+	CandidateCoins     []CandidateCoin                    `json:"candidate_coins"`
+	PromptVariant      string                             `json:"prompt_variant,omitempty"`
+	TradingStats       *TradingStats                      `json:"trading_stats,omitempty"`
+	RecentOrders       []RecentOrder                      `json:"recent_orders,omitempty"`
+	MarketDataMap      map[string]*market.Data            `json:"-"`
+	MultiTFMarket      map[string]map[string]*market.Data `json:"-"`
+	OITopDataMap       map[string]*OITopData              `json:"-"`
+	QuantDataMap       map[string]*QuantData              `json:"-"`
+	OIRankingData      *nofxos.OIRankingData              `json:"-"` // Market-wide OI ranking data
+	NetFlowRankingData *nofxos.NetFlowRankingData         `json:"-"` // Market-wide fund flow ranking data
+	PriceRankingData   *nofxos.PriceRankingData           `json:"-"` // Market-wide price gainers/losers
+	BTCETHLeverage     int                                `json:"-"`
+	AltcoinLeverage    int                                `json:"-"`
+	Timeframes         []string                           `json:"-"`
 }
 
 // Decision AI trading decision
@@ -1972,6 +1972,13 @@ func compactArrayOpen(s string) string {
 // Decision Validation
 // ============================================================================
 
+// isBTCOrETH returns true when the symbol's base currency is BTC or ETH,
+// regardless of quote currency (USDT, USDC, etc.)
+func isBTCOrETH(symbol string) bool {
+	upper := strings.ToUpper(symbol)
+	return strings.HasPrefix(upper, "BTC") || strings.HasPrefix(upper, "ETH")
+}
+
 func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
 	for i := range decisions {
 		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio); err != nil {
@@ -1999,7 +2006,7 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		maxLeverage := altcoinLeverage
 		posRatio := altcoinPosRatio
 		maxPositionValue := accountEquity * posRatio
-		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
+		if isBTCOrETH(d.Symbol) {
 			maxLeverage = btcEthLeverage
 			posRatio = btcEthPosRatio
 			maxPositionValue = accountEquity * posRatio
@@ -2020,7 +2027,7 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		const minPositionSizeGeneral = 12.0
 		const minPositionSizeBTCETH = 60.0
 
-		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
+		if isBTCOrETH(d.Symbol) {
 			if d.PositionSizeUSD < minPositionSizeBTCETH {
 				return fmt.Errorf("%s opening amount too small (%.2f USDT), must be ≥%.2f USDT", d.Symbol, d.PositionSizeUSD, minPositionSizeBTCETH)
 			}
@@ -2032,10 +2039,14 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 
 		tolerance := maxPositionValue * 0.01
 		if d.PositionSizeUSD > maxPositionValue+tolerance {
-			if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
-				return fmt.Errorf("BTC/ETH single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
+			original := d.PositionSizeUSD
+			d.PositionSizeUSD = maxPositionValue
+			if isBTCOrETH(d.Symbol) {
+				logger.Infof("⚠️  [Position Fallback] %s BTC/ETH position size exceeded (%.0f > %.0f USDT, %.1fx equity), auto-adjusting to limit",
+					d.Symbol, original, maxPositionValue, posRatio)
 			} else {
-				return fmt.Errorf("altcoin single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
+				logger.Infof("⚠️  [Position Fallback] %s altcoin position size exceeded (%.0f > %.0f USDT, %.1fx equity), auto-adjusting to limit",
+					d.Symbol, original, maxPositionValue, posRatio)
 			}
 		}
 		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
