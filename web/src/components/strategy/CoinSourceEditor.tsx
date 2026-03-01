@@ -127,7 +127,12 @@ export function CoinSourceEditor({
       const base = symbol.replace(/^xyz:/i, '').replace(/USDT$|USD$|-USDC$/i, '')
       formattedSymbol = `xyz:${base}`
     } else {
-      formattedSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`
+      // Preserve USDC suffix if explicitly typed, otherwise default to USDT
+      if (symbol.endsWith('USDT') || symbol.endsWith('USDC')) {
+        formattedSymbol = symbol
+      } else {
+        formattedSymbol = `${symbol}USDT`
+      }
     }
 
     const currentCoins = config.static_coins || []
@@ -157,7 +162,12 @@ export function CoinSourceEditor({
       const base = symbol.replace(/^xyz:/i, '').replace(/USDT$|USD$|-USDC$/i, '')
       formattedSymbol = `xyz:${base}`
     } else {
-      formattedSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`
+      // Preserve USDC suffix if explicitly typed, otherwise default to USDT
+      if (symbol.endsWith('USDT') || symbol.endsWith('USDC')) {
+        formattedSymbol = symbol
+      } else {
+        formattedSymbol = `${symbol}USDT`
+      }
     }
 
     const currentExcluded = config.excluded_coins || []

@@ -514,13 +514,13 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		return
 	}
 
-	// Validate trading symbol format
+	// Validate trading symbol format (support both USDT and USDC settlement)
 	if req.TradingSymbols != "" {
 		symbols := strings.Split(req.TradingSymbols, ",")
 		for _, symbol := range symbols {
-			symbol = strings.TrimSpace(symbol)
-			if symbol != "" && !strings.HasSuffix(strings.ToUpper(symbol), "USDT") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid symbol format: %s, must end with USDT", symbol)})
+			symbol = strings.TrimSpace(strings.ToUpper(symbol))
+			if symbol != "" && !strings.HasSuffix(symbol, "USDT") && !strings.HasSuffix(symbol, "USDC") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid symbol format: %s, must end with USDT or USDC", symbol)})
 				return
 			}
 		}

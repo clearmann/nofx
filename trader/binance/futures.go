@@ -144,14 +144,36 @@ func (t *FuturesTrader) GetBalance() (map[string]interface{}, error) {
 	}
 
 	result := make(map[string]interface{})
-	result["totalWalletBalance"], _ = strconv.ParseFloat(account.TotalWalletBalance, 64)
-	result["availableBalance"], _ = strconv.ParseFloat(account.AvailableBalance, 64)
-	result["totalUnrealizedProfit"], _ = strconv.ParseFloat(account.TotalUnrealizedProfit, 64)
 
-	logger.Infof("✓ Binance API returned: total balance=%s, available=%s, unrealized PnL=%s",
-		account.TotalWalletBalance,
-		account.AvailableBalance,
-		account.TotalUnrealizedProfit)
+	// Try to read USDC asset balance first (user configured USDC settlement)
+	var usdcWallet, usdcAvailable, usdcUnrealized float64
+	for _, asset := range account.Assets {
+		if asset.Asset == "USDC" {
+			usdcWallet, _ = strconv.ParseFloat(asset.WalletBalance, 64)
+			usdcAvailable, _ = strconv.ParseFloat(asset.AvailableBalance, 64)
+			usdcUnrealized, _ = strconv.ParseFloat(asset.UnrealizedProfit, 64)
+			logger.Infof("✓ Found USDC asset: wallet=%s, available=%s, unrealizedPnL=%s",
+				asset.WalletBalance, asset.AvailableBalance, asset.UnrealizedProfit)
+			break
+		}
+	}
+
+	if usdcWallet > 0 || usdcAvailable > 0 {
+		// Use USDC-specific balance
+		result["totalWalletBalance"] = usdcWallet
+		result["availableBalance"] = usdcAvailable
+		result["totalUnrealizedProfit"] = usdcUnrealized
+		result["totalEquity"] = usdcWallet + usdcUnrealized
+		logger.Infof("✓ Binance USDC balance: wallet=%.4f, available=%.4f, unrealizedPnL=%.4f",
+			usdcWallet, usdcAvailable, usdcUnrealized)
+	} else {
+		// Fallback: use aggregate total (USDT-based or multi-asset account)
+		result["totalWalletBalance"], _ = strconv.ParseFloat(account.TotalWalletBalance, 64)
+		result["availableBalance"], _ = strconv.ParseFloat(account.AvailableBalance, 64)
+		result["totalUnrealizedProfit"], _ = strconv.ParseFloat(account.TotalUnrealizedProfit, 64)
+		logger.Infof("✓ Binance aggregate balance: total=%s, available=%s, unrealizedPnL=%s (no USDC asset found)",
+			account.TotalWalletBalance, account.AvailableBalance, account.TotalUnrealizedProfit)
+	}
 
 	// Update cache
 	t.balanceCacheMutex.Lock()
