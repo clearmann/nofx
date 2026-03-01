@@ -336,7 +336,26 @@ func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 	return nil
 }
 
-// OpenLong opens a long position
+// GetBestPrice fetches the best bid and ask prices for a symbol from the order book.
+func (t *FuturesTrader) GetBestPrice(symbol string) (bid, ask float64, err error) {
+	tickers, err := t.client.NewListBookTickersService().
+		Symbol(symbol).
+		Do(context.Background())
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get book ticker for %s: %w", symbol, err)
+	}
+	if len(tickers) == 0 {
+		return 0, 0, fmt.Errorf("no book ticker returned for %s", symbol)
+	}
+	bid, _ = strconv.ParseFloat(tickers[0].BidPrice, 64)
+	ask, _ = strconv.ParseFloat(tickers[0].AskPrice, 64)
+	if bid <= 0 || ask <= 0 {
+		return 0, 0, fmt.Errorf("invalid bid/ask prices for %s: bid=%.8f ask=%.8f", symbol, bid, ask)
+	}
+	return bid, ask, nil
+}
+
+// OpenLong opens a long position using a Post-Only (GTX) limit order at the best bid price.
 func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
 	// First cancel all pending orders for this symbol (clean up old stop-loss and take-profit orders)
 	if err := t.CancelAllOrders(symbol); err != nil {
@@ -367,22 +386,35 @@ func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) 
 		return nil, err
 	}
 
-	// Create market buy order (using br ID)
+	// Fetch best bid price for maker (Post-Only) limit order
+	bid, _, err := t.GetBestPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get best price for maker entry: %w", err)
+	}
+	priceStr, err := t.FormatPrice(symbol, bid)
+	if err != nil {
+		return nil, err
+	}
+	logger.Infof("  📌 Open long (Maker): %s qty=%s price=%s (bid)", symbol, quantityStr, priceStr)
+
+	// Create Post-Only limit buy order (GTX = Good Till Crossing / Maker only)
 	order, err := t.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(futures.SideTypeBuy).
 		PositionSide(futures.PositionSideTypeLong).
-		Type(futures.OrderTypeMarket).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTX).
 		Quantity(quantityStr).
+		Price(priceStr).
 		NewClientOrderID(getBrOrderID()).
 		Do(context.Background())
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to open long position: %w", err)
+		return nil, fmt.Errorf("failed to open long position (maker limit): %w", err)
 	}
 
-	logger.Infof("✓ Opened long position successfully: %s quantity: %s", symbol, quantityStr)
-	logger.Infof("  Order ID: %d", order.OrderID)
+	logger.Infof("✓ Opened long position (Maker Limit) successfully: %s qty=%s price=%s", symbol, quantityStr, priceStr)
+	logger.Infof("  Order ID: %d, Status: %s", order.OrderID, order.Status)
 
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
@@ -391,7 +423,7 @@ func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) 
 	return result, nil
 }
 
-// OpenShort opens a short position
+// OpenShort opens a short position using a Post-Only (GTX) limit order at the best ask price.
 func (t *FuturesTrader) OpenShort(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
 	// First cancel all pending orders for this symbol (clean up old stop-loss and take-profit orders)
 	if err := t.CancelAllOrders(symbol); err != nil {
@@ -422,22 +454,35 @@ func (t *FuturesTrader) OpenShort(symbol string, quantity float64, leverage int)
 		return nil, err
 	}
 
-	// Create market sell order (using br ID)
+	// Fetch best ask price for maker (Post-Only) limit order
+	_, ask, err := t.GetBestPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get best price for maker entry: %w", err)
+	}
+	priceStr, err := t.FormatPrice(symbol, ask)
+	if err != nil {
+		return nil, err
+	}
+	logger.Infof("  📌 Open short (Maker): %s qty=%s price=%s (ask)", symbol, quantityStr, priceStr)
+
+	// Create Post-Only limit sell order (GTX = Good Till Crossing / Maker only)
 	order, err := t.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(futures.SideTypeSell).
 		PositionSide(futures.PositionSideTypeShort).
-		Type(futures.OrderTypeMarket).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTX).
 		Quantity(quantityStr).
+		Price(priceStr).
 		NewClientOrderID(getBrOrderID()).
 		Do(context.Background())
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to open short position: %w", err)
+		return nil, fmt.Errorf("failed to open short position (maker limit): %w", err)
 	}
 
-	logger.Infof("✓ Opened short position successfully: %s quantity: %s", symbol, quantityStr)
-	logger.Infof("  Order ID: %d", order.OrderID)
+	logger.Infof("✓ Opened short position (Maker Limit) successfully: %s qty=%s price=%s", symbol, quantityStr, priceStr)
+	logger.Infof("  Order ID: %d, Status: %s", order.OrderID, order.Status)
 
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
@@ -473,21 +518,34 @@ func (t *FuturesTrader) CloseLong(symbol string, quantity float64) (map[string]i
 		return nil, err
 	}
 
-	// Create market sell order (close long, using br ID)
+	// Fetch best ask price: sell limit at ask = maker order on the sell side
+	_, ask, err := t.GetBestPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get best price for limit close: %w", err)
+	}
+	priceStr, err := t.FormatPrice(symbol, ask)
+	if err != nil {
+		return nil, err
+	}
+	logger.Infof("  📌 Close long (Limit): %s qty=%s price=%s (ask)", symbol, quantityStr, priceStr)
+
+	// Create limit sell order (GTC) to close long position
 	order, err := t.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(futures.SideTypeSell).
 		PositionSide(futures.PositionSideTypeLong).
-		Type(futures.OrderTypeMarket).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTC).
 		Quantity(quantityStr).
+		Price(priceStr).
 		NewClientOrderID(getBrOrderID()).
 		Do(context.Background())
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to close long position: %w", err)
+		return nil, fmt.Errorf("failed to close long position (limit): %w", err)
 	}
 
-	logger.Infof("✓ Closed long position successfully: %s quantity: %s", symbol, quantityStr)
+	logger.Infof("✓ Closed long position (Limit) successfully: %s qty=%s price=%s", symbol, quantityStr, priceStr)
 
 	// After closing position, cancel all pending orders for this symbol (stop-loss and take-profit orders)
 	if err := t.CancelAllOrders(symbol); err != nil {
@@ -528,21 +586,34 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 		return nil, err
 	}
 
-	// Create market buy order (close short, using br ID)
+	// Fetch best bid price: buy limit at bid = maker order on the buy side
+	bid, _, err := t.GetBestPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get best price for limit close: %w", err)
+	}
+	priceStr, err := t.FormatPrice(symbol, bid)
+	if err != nil {
+		return nil, err
+	}
+	logger.Infof("  📌 Close short (Limit): %s qty=%s price=%s (bid)", symbol, quantityStr, priceStr)
+
+	// Create limit buy order (GTC) to close short position
 	order, err := t.client.NewCreateOrderService().
 		Symbol(symbol).
 		Side(futures.SideTypeBuy).
 		PositionSide(futures.PositionSideTypeShort).
-		Type(futures.OrderTypeMarket).
+		Type(futures.OrderTypeLimit).
+		TimeInForce(futures.TimeInForceTypeGTC).
 		Quantity(quantityStr).
+		Price(priceStr).
 		NewClientOrderID(getBrOrderID()).
 		Do(context.Background())
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to close short position: %w", err)
+		return nil, fmt.Errorf("failed to close short position (limit): %w", err)
 	}
 
-	logger.Infof("✓ Closed short position successfully: %s quantity: %s", symbol, quantityStr)
+	logger.Infof("✓ Closed short position (Limit) successfully: %s qty=%s price=%s", symbol, quantityStr, priceStr)
 
 	// After closing position, cancel all pending orders for this symbol (stop-loss and take-profit orders)
 	if err := t.CancelAllOrders(symbol); err != nil {
